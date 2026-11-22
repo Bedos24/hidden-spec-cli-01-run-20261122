@@ -195,7 +195,10 @@ function occurrences(lines: string[], O: string[], tier: number, from: number): 
   return out;
 }
 
-/** The first tier at which O occurs at or after `from`, with its occurrences; null when none. */
+/** The first tier at which O occurs at or after `from`, with its occurrences; null when none.
+ *  Tiers are tried in order, exact first: tier 0 exact lines, tier 1 trailing whitespace ignored,
+ *  tier 2 leading and trailing whitespace ignored. The first tier with any occurrence wins, even
+ *  when a later tier would match nearer the hunk's line number. */
 function firstTier(lines: string[], O: string[], from: number, strict: boolean): { tier: number; occ: number[] } | null {
   const tiers = strict ? [0] : [0, 1, 2];
   for (const t of tiers) {
@@ -261,20 +264,17 @@ function applyItems(items: BodyItem[], fileLines: string[], at: number, tier: nu
   return out;
 }
 
-function lastCtxOrNewNoEol(items: BodyItem[]): boolean {
+/** Whether the last context or new line of the body (per `kinds`) is followed by a `\` line,
+ *  i.e. the file must not end with a line break when the edit reaches the end of the file. */
+function lastNoEol(items: BodyItem[], kinds: Array<'ctx' | 'new'>): boolean {
   for (let i = items.length - 1; i >= 0; i--) {
-    const k = items[i]!.kind;
-    if (k === 'ctx' || k === 'new') return items[i]!.noEol;
+    if (kinds.includes(items[i]!.kind as 'ctx' | 'new')) return items[i]!.noEol;
   }
   return false;
 }
 
-function lastNewNoEol(items: BodyItem[]): boolean {
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i]!.kind === 'new') return items[i]!.noEol;
-  }
-  return false;
-}
+const lastCtxOrNewNoEol = (items: BodyItem[]): boolean => lastNoEol(items, ['ctx', 'new']);
+const lastNewNoEol = (items: BodyItem[]): boolean => lastNoEol(items, ['new']);
 
 // ---- Section 6: unified diffs. ----
 
@@ -325,6 +325,20 @@ function diffPath(line: string): string | null {
 const HUNK_HEAD = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 const DIFF_GIT = /^diff --git a\/(\S+) b\/(\S+)$/;
 
+/** The occurrence nearest to `target`; of two equally near, the earlier one. */
+function nearestTo(occ: number[], target: number): number {
+  let at = occ[0]!;
+  let best = Math.abs(at - target);
+  for (const o of occ) {
+    const dist = Math.abs(o - target);
+    if (dist < best) {
+      best = dist;
+      at = o;
+    }
+  }
+  return at;
+}
+
 function applyHunks(text: string, hunks: Hunk[], strict: boolean, path: string): string {
   const f = splitFile(text);
   let d = 0;
@@ -340,16 +354,7 @@ function applyHunks(text: string, hunks: Hunk[], strict: boolean, path: string):
     } else {
       const found = firstTier(f.lines, O, 0, strict);
       if (found === null) throw new Fail('no-match', path);
-      const target = h.A - 1 + d;
-      let at = found.occ[0]!;
-      let best = Math.abs(at - target);
-      for (const o of found.occ) {
-        const dist = Math.abs(o - target);
-        if (dist < best) {
-          best = dist;
-          at = o;
-        }
-      }
+      const at = nearestTo(found.occ, h.A - 1 + d);
       const toEnd = at + O.length === f.lines.length;
       const rep = applyItems(h.items, f.lines, at, found.tier);
       f.lines.splice(at, O.length, ...rep);
